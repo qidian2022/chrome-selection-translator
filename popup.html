@@ -1,0 +1,6 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>划词译</title><link rel="stylesheet" href="ui.css"></head><body class="popup"><main>
+<header><h1>划词译 <span class="eyebrow">中文</span></h1><button id="settings" class="subtle">设置 ↗</button></header>
+<label for="source">原文</label><textarea id="source" placeholder="选中网页文字，或把要翻译的内容粘贴在这里…" maxlength="12000"></textarea>
+<div class="actions"><button id="translate" class="primary">翻译成中文</button><button id="stop" hidden>停止</button><button id="copy" disabled>复制</button></div>
+<div id="result" aria-label="中文译文">中文译文会显示在这里。</div><div id="status" class="status" role="status" aria-live="polite"></div>
+<p class="hint">⌘ / Ctrl + Enter 翻译 · 最多 12,000 字符</p></main><script src="client.js"></script><script src="popup.js"></script></body></html>
