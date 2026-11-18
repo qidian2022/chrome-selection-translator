@@ -1,4 +1,6 @@
-import {translate, DEFAULT_MODEL, validateText} from './api.js';
+import {studyPrompt, parseWords} from './study-api.js';
+import {saveEntry} from './library-store.js';
+import {translate, requestText, DEFAULT_MODEL, validateText} from './api.js';
 import {TranslationCache} from './cache.js';
 
 const translationCache = new TranslationCache();
@@ -40,6 +42,16 @@ chrome.runtime.onInstalled.addListener(async ({reason}) => {
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
   (async () => {
+    if (message.type === 'OPEN_LIBRARY') {
+      const section = message.kind === 'answer' ? 'answers' : 'words';
+      await chrome.tabs.create({url: chrome.runtime.getURL('library.html#' + section)});
+      return {ok: true};
+    }
+    if (message.type === 'SAVE_ENTRY' && ['word', 'answer'].includes(message.kind)) {
+      await ready;
+      await saveEntry(message.kind, message.data);
+      return {ok: true};
+    }
     if (message.type === 'OPEN_SETTINGS') { await chrome.runtime.openOptionsPage(); return {ok: true}; }
     if (message.type === 'PUBLIC_SETTINGS' || (message.type === 'GET_SETTINGS' && trustedPage(sender))) {
       const {apiKey, model, showBubble} = await settings();
@@ -69,7 +81,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 });
 
 chrome.runtime.onConnect.addListener(port => {
-  if (port.name !== 'translate' || port.sender?.id !== chrome.runtime.id) return;
+  if (!['translate', 'ask', 'vocab'].includes(port.name) || port.sender?.id !== chrome.runtime.id) return;
   const controller = new AbortController();
   let started = false, connected = true;
   const send = value => { if (connected) { try { port.postMessage(value); } catch { controller.abort(); } } };
@@ -81,6 +93,14 @@ chrome.runtime.onConnect.addListener(port => {
       const config = await settings();
       if (controller.signal.aborted) return;
       const text = validateText(message.text);
+      const options = {...config, signal: controller.signal, onDelta: delta => send({type: 'DELTA', delta})};
+      if (port.name !== 'translate') {
+        const prompt = studyPrompt(port.name, text, message.question, message.history);
+        if (port.name === 'vocab') delete options.onDelta;
+        const output = await requestText({...options, ...prompt});
+        send(port.name === 'vocab' ? {type: 'DONE', words: parseWords(output)} : {type: 'DONE'});
+        return;
+      }
       if (!config.apiKey) throw new Error('先在设置页填写 OpenAI API 密钥，再开始翻译。');
       const version = cacheVersion;
       if (message.force === true) translationCache.delete(config.model, text);
@@ -88,7 +108,7 @@ chrome.runtime.onConnect.addListener(port => {
       if (cached !== null) {
         send({type: 'DELTA', delta: cached}); send({type: 'DONE'}); return;
       }
-      const output = await translate({...config, text, signal: controller.signal, onDelta: delta => send({type: 'DELTA', delta})});
+      const output = await translate({...options, text});
       if (!controller.signal.aborted && version === cacheVersion) translationCache.set(config.model, text, output);
       send({type: 'DONE'});
     } catch (error) { send({type: 'ERROR', error: error.message}); }

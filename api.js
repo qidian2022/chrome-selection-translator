@@ -26,7 +26,7 @@ export async function* readEvents(body) {
   const parse = block => {
     const data = block.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
     if (!data || data === '[DONE]') return null;
-    try { return JSON.parse(data); } catch { throw new Error('收到的翻译数据格式异常，请重试。'); }
+    try { return JSON.parse(data); } catch { throw new Error('收到的数据格式异常，请重试。'); }
   };
   try {
     while (true) {
@@ -47,9 +47,12 @@ export async function* readEvents(body) {
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
-export async function translate({text, apiKey, model = DEFAULT_MODEL, signal, onDelta = () => {}, fetchImpl = fetch}) {
-  text = validateText(text);
-  if (!apiKey) throw new Error('先在设置页填写 OpenAI API 密钥，再开始翻译。');
+export async function translate({text, ...options}) {
+  return requestText({...options, input: validateText(text), instructions: INSTRUCTIONS, translation: true});
+}
+
+export async function requestText({input, instructions, translation = false, apiKey, model = DEFAULT_MODEL, signal, onDelta = () => {}, fetchImpl = fetch}) {
+  if (!apiKey) throw new Error('先在设置页填写 OpenAI API 密钥，再开始使用。');
   const headersTimeout = new AbortController();
   const timer = setTimeout(() => headersTimeout.abort(), 25000);
   const combined = AbortSignal.any([signal || new AbortController().signal, headersTimeout.signal, AbortSignal.timeout(90000)]);
@@ -59,12 +62,12 @@ export async function translate({text, apiKey, model = DEFAULT_MODEL, signal, on
       method: 'POST', credentials: 'omit', redirect: 'error', signal: combined,
       headers: {'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`},
       body: JSON.stringify({
-        model, instructions: INSTRUCTIONS, input: text, stream: true, store: false, max_output_tokens: 8192,
+        model, instructions, input, stream: true, store: false, max_output_tokens: 8192,
         ...(model === 'gpt-6-luna' ? {reasoning: {effort: 'none'}} : {})
       })
     });
   } catch (error) {
-    if (signal?.aborted) throw new Error('翻译已停止。');
+    if (signal?.aborted) throw new Error('请求已停止。');
     if (combined.aborted) throw new Error('等待服务响应超时，请重试。');
     throw new Error('无法连接 OpenAI，请检查网络能否访问 api.openai.com。');
   } finally { clearTimeout(timer); }
@@ -72,7 +75,7 @@ export async function translate({text, apiKey, model = DEFAULT_MODEL, signal, on
     const data = await response.json().catch(() => ({}));
     throw new Error(httpError(response.status, data.error?.code));
   }
-  if (!response.body) throw new Error('OpenAI 没有返回翻译内容。');
+  if (!response.body) throw new Error('OpenAI 没有返回内容。');
   let output = '', completed = false;
   try {
     for await (const event of readEvents(response.body)) {
@@ -80,16 +83,16 @@ export async function translate({text, apiKey, model = DEFAULT_MODEL, signal, on
         output += event.delta; onDelta(event.delta);
       }
       if (event.type === 'response.completed') { completed = true; break; }
-      if (event.type === 'response.incomplete') throw new Error('译文尚未完成，请缩短原文后重试。');
-      if (event.type === 'response.failed' || event.type === 'error') throw new Error('OpenAI 未能完成翻译，请重试或更换模型。');
-      if (event.type === 'response.refusal.delta') throw new Error('模型未翻译这段文字。可以修改选取范围后重试。');
+      if (event.type === 'response.incomplete') throw new Error('回复尚未完成，请缩短原文后重试。');
+      if (event.type === 'response.failed' || event.type === 'error') throw new Error('OpenAI 未能完成请求，请重试或更换模型。');
+      if (event.type === 'response.refusal.delta') throw new Error(translation ? '模型未翻译这段文字。可以修改选取范围后重试。' : '模型未能回答，请调整选文或问题。');
     }
   } catch (error) {
-    if (signal?.aborted) throw new Error('翻译已停止。');
-    if (combined.aborted) throw new Error('翻译超时，已显示的内容尚未完成。请重试。');
+    if (signal?.aborted) throw new Error('请求已停止。');
+    if (combined.aborted) throw new Error('请求超时，已显示的内容尚未完成。请重试。');
     throw error;
   }
-  if (!completed) throw new Error('连接中断，译文尚未完成。请重试。');
-  if (!output.trim()) throw new Error('模型返回了空译文，请重试或更换模型。');
+  if (!completed) throw new Error('连接中断，回复尚未完成。请重试。');
+  if (!output.trim()) throw new Error(translation ? '模型返回了空译文，请重试或更换模型。' : '模型返回了空回复，请重试。');
   return output;
 }

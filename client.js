@@ -1,14 +1,14 @@
 (() => {
   globalThis.QuickTranslate = {
-    start(text, handlers, {force = false} = {}) {
+    start(text, handlers, {force = false, mode = 'translate', question, history} = {}) {
       let port, finished = false, timer;
       const finish = () => { finished = true; clearInterval(timer); port?.disconnect(); };
       try {
-        port = chrome.runtime.connect({name: 'translate'});
+        port = chrome.runtime.connect({name: mode});
         port.onMessage.addListener(message => {
           if (finished) return;
           if (message.type === 'DELTA') handlers.delta(message.delta);
-          if (message.type === 'DONE') { finish(); handlers.done(); }
+          if (message.type === 'DONE') { finish(); handlers.done(message); }
           if (message.type === 'ERROR') { finish(); handlers.error(message.error); }
         });
         port.onDisconnect.addListener(() => {
@@ -17,7 +17,7 @@
         });
         // Port traffic keeps a slow streaming request alive in Manifest V3.
         timer = setInterval(() => { try { port.postMessage({type: 'PING'}); } catch { finish(); handlers.error('连接中断，请重试。'); } }, 20000);
-        port.postMessage({type: 'START', text, force});
+        port.postMessage({type: 'START', text, force, question, history});
       } catch { finish(); queueMicrotask(() => handlers.error('扩展已更新，请刷新网页后重试。')); }
       return finish;
     },

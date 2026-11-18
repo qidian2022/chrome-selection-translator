@@ -19,18 +19,24 @@
     #result{padding:5px 12px 11px;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;overflow:auto;overscroll-behavior:contain;min-height:0;flex:1} #result:empty{display:none}
     #status{padding:5px 12px 10px;color:#7a858b;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;flex-shrink:0} #status.error{color:#a13c2c}
     #extras{padding:0 11px 8px;border-top:1px solid #edf0f2;flex-shrink:0} #extras .actions{display:flex;gap:4px;margin-top:5px;color:#576871} #extras button{font-size:11px;padding:5px 7px}
+    #panel.reading #copy,#panel.reading #more,#panel.reading #studyWords,#panel.reading #extras,#panel.reading #result,#panel.reading #status{display:none}
+    #panel.reading header{padding-bottom:4px}#studyWords{width:auto;font-size:11px}
     #original{margin:6px 0 0;max-height:90px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#758089}
   </style>
   <div id="toolbar" role="toolbar" aria-label="划词工具" hidden>
     <button id="trigger" title="翻译成中文" aria-label="翻译成中文">${translateIcon}翻译</button>
-    <span class="separator"></span><button id="copySource" title="复制原文" aria-label="复制原文">${copyIcon}<span id="copyLabel">复制</span></button>
+    <span class="separator"></span><button id="ask" title="解释选文并追问">AI 问答</button>
+    <button id="vocab" title="查生词并收录">生词</button>
+    <span class="separator"></span><button id="copySource" title="复制原文" aria-label="复制原文">${copyIcon}<span id="copyLabel" hidden>复制</span></button>
   </div>
   <section id="panel" role="dialog" aria-label="中文译文" hidden>
-    <header><span>中文</span><button id="copy" title="复制译文" aria-label="复制译文" disabled>${copyIcon}</button><button id="more" title="更多选项" aria-label="更多选项" aria-expanded="false">${svg('<circle cx="4" cy="10" r=".7"/><circle cx="10" cy="10" r=".7"/><circle cx="16" cy="10" r=".7"/>')}</button><button id="close" title="关闭" aria-label="关闭译文">${svg('<path d="m5 5 10 10M15 5 5 15"/>')}</button></header>
+    <header><span id="panelTitle">中文</span><button id="studyWords" title="查看选文中的生词">查生词</button><button id="copy" title="复制译文" aria-label="复制译文" disabled>${copyIcon}</button><button id="more" title="更多选项" aria-label="更多选项" aria-expanded="false">${svg('<circle cx="4" cy="10" r=".7"/><circle cx="10" cy="10" r=".7"/><circle cx="16" cy="10" r=".7"/>')}</button><button id="close" title="关闭" aria-label="关闭译文">${svg('<path d="m5 5 10 10M15 5 5 15"/>')}</button></header>
     <div id="result"></div><div id="status" role="status" aria-live="polite"></div>
     <div id="extras" hidden><div class="actions"><button id="showOriginal" aria-expanded="false">原文</button><button id="retry">重新翻译</button><button id="settings">设置</button></div><div id="original" hidden></div></div>
+    <div id="study" hidden></div>
   </section>`;
   const $ = id => root.getElementById(id);
+  const study = QuickTranslate.createStudy($('study'), () => placePanel());
   let saved = '', anchor = {left:24, right:48, top:60, bottom:80}, cancel = null;
   let generation = 0, showBubble = true, pointerDown = false, timer = null, dismissedText = null;
   let panelAbove = false, anchorTarget = null, placementFrame = null;
@@ -95,13 +101,13 @@
     const panel = $('panel');
     if (initial) panelAbove = innerHeight - anchor.bottom < 140 && anchor.top > innerHeight - anchor.bottom;
     const space = panelAbove ? anchor.top - 14 : innerHeight - anchor.bottom - 14;
-    panel.style.maxHeight = `${Math.min(360,Math.max(90,space),innerHeight-16)}px`;
+    panel.style.maxHeight = `${($('panel').classList.contains('reading') ? Math.min(470,innerHeight-16) : Math.min(360,Math.max(90,space),innerHeight-16))}px`;
     panel.style.left = `${Math.max(8,Math.min(anchor.left,innerWidth-panel.offsetWidth-8))}px`;
     const top = panelAbove ? anchor.top - panel.offsetHeight - 6 : anchor.bottom + 6;
     panel.style.top = `${Math.max(8,Math.min(top,innerHeight-panel.offsetHeight-8))}px`;
   }
   function close(suppress = true) {
-    clearTimeout(timer); cancel?.(); cancel = null; generation++;
+    clearTimeout(timer); cancel?.(); cancel = null; generation++; study.close();
     if (placementFrame !== null) { cancelAnimationFrame(placementFrame); placementFrame = null; }
     if (suppress) dismissedText = selection()?.text || saved;
     $('panel').hidden = true; $('toolbar').hidden = true;
@@ -114,7 +120,7 @@
     if (!$('panel').hidden && current.text === saved) return;
     if (!$('panel').hidden) close(false);
     saved = current.text; rememberAnchor(current);
-    mount(); $('toolbar').hidden = !showBubble; $('copyLabel').textContent = '复制';
+    mount(); $('toolbar').hidden = !showBubble; $('copyLabel').hidden = true;
     if (showBubble) placeToolbar();
   }
   function scheduleSelection() {
@@ -125,9 +131,24 @@
     $('status').textContent = text; $('status').classList.toggle('error',error); $('status').hidden = hide;
     placePanel();
   }
-  function start(text, force = false) {
-    clearTimeout(timer); cancel?.(); const id = ++generation;
+  function openPanel(text, title) {
+    clearTimeout(timer); cancel?.(); cancel = null; study.close(); generation++;
+    $('panelTitle').textContent = title;
+    $('panel').setAttribute('aria-label', title === '中文' ? '中文译文' : title);
+    const reading = title !== '中文';
+    $('panel').classList.toggle('reading', reading);
+    $('study').hidden = !reading;
     saved = text; dismissedText = text; mount(); $('toolbar').hidden = true; $('panel').hidden = false;
+    return generation;
+  }
+  function startStudy(mode) {
+    openPanel(saved, mode === 'ask' ? 'AI 问答' : '生词');
+    $('panel').style.width = '360px';
+    placePanel(true);
+    study.open(mode, saved);
+  }
+  function start(text, force = false) {
+    const id = openPanel(text, '中文');
     $('panel').style.width = text.length > 65 ? '320px' : '240px';
     $('result').textContent = ''; $('original').textContent = text; $('copy').disabled = true;
     $('extras').hidden = true; $('original').hidden = true; $('more').setAttribute('aria-expanded','false'); $('showOriginal').setAttribute('aria-expanded','false');
@@ -144,11 +165,13 @@
   // Keep the selection when clicking actions, but allow selecting the translated text.
   root.addEventListener('mousedown',event => { if (event.target.closest('button')) event.preventDefault(); });
   $('trigger').addEventListener('click',event => { if (event.isTrusted) start(saved); });
+  $('ask').onclick = event => { if (event.isTrusted) startStudy('ask'); };
+  $('vocab').onclick = $('studyWords').onclick = event => { if (event.isTrusted) startStudy('vocab'); };
   $('retry').addEventListener('click',event => { if (event.isTrusted) start(saved, true); });
   $('copySource').addEventListener('click',async event => {
     if (!event.isTrusted) return;
-    try { await QuickTranslate.copy(saved,root); $('copyLabel').textContent = '已复制'; placeToolbar(); }
-    catch { $('copyLabel').textContent = '按 ⌘/Ctrl+C'; placeToolbar(); }
+    try { await QuickTranslate.copy(saved,root); $('copyLabel').hidden = false; $('copyLabel').textContent = '已复制'; placeToolbar(); }
+    catch { $('copyLabel').hidden = false; $('copyLabel').textContent = '按 ⌘/Ctrl+C'; placeToolbar(); }
   });
   $('copy').addEventListener('click',async () => {
     try { await QuickTranslate.copy($('result').textContent,root); status('已复制'); }

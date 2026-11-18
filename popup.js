@@ -1,8 +1,10 @@
 const $ = id => document.getElementById(id);
+const study = QuickTranslate.createStudy($('study'));
 let cancel, generation = 0;
 function status(text, error = false) { $('status').textContent = text; $('status').classList.toggle('error', error); }
 function idle() { $('stop').hidden = true; $('copy').disabled = !$('result').textContent; cancel = null; }
 function start() {
+  study.close(); $('study').hidden = true; $('result').hidden = false; $('copy').hidden = false;
   cancel?.(); const id = ++generation;
   $('result').textContent = ''; $('copy').disabled = true; $('stop').hidden = false; status('正在翻译…');
   cancel = QuickTranslate.start($('source').value, {
@@ -11,6 +13,14 @@ function start() {
     error(error) { if (id === generation) { idle(); status(error, true); } }
   });
 }
+function openStudy(mode) {
+  if (!$('source').value.trim()) { status('请先选中或粘贴原文。', true); $('source').focus(); return; }
+  cancel?.(); generation++; idle(); status('');
+  $('result').hidden = true; $('copy').hidden = true; $('study').hidden = false;
+  study.open(mode, $('source').value);
+}
+$('ask').onclick = () => openStudy('ask');
+$('vocab').onclick = () => openStudy('vocab');
 $('translate').addEventListener('click', start);
 $('source').addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); start(); } });
 $('stop').addEventListener('click', () => { cancel?.(); generation++; idle(); status('已停止，当前显示的是部分译文。'); });

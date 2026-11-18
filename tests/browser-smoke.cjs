@@ -6,14 +6,19 @@ const output = process.env.TEST_OUTPUT || '/tmp/selection-translator-test';
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 (async () => {
+  const channel = process.env.PLAYWRIGHT_CHANNEL || 'chromium';
   const context = await chromium.launchPersistentContext('', {
-    channel: 'chromium', headless: true,
-    args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
+    channel, headless: true, ignoreDefaultArgs: ['--disable-extensions'],
+    args: channel === 'chrome' ? ['--enable-unsafe-extension-debugging'] : [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
     viewport: {width: 1200, height: 900}
   });
   try {
     const errors = [];
     context.on('page', page => page.on('pageerror', e => errors.push(e.message)));
+    if (channel === 'chrome') {
+      const browserSession = await context.browser().newBrowserCDPSession();
+      await browserSession.send('Extensions.loadUnpacked', {path:extension});
+    }
     let worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
     const id = worker.url().split('/')[2];
     await worker.evaluate(() => {
@@ -25,7 +30,10 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
         if (__mode === 'slow') {
           return new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
         }
-        const events = [{type:'response.output_text.delta',delta:'学习物理，'}, {type:'response.output_text.delta',delta:'探索世界。'}, {type:'response.completed'}];
+        const payload = JSON.parse(init.body);
+        const chunks = Array.isArray(payload.input) ? ['第一段', '解释。'] :
+          payload.instructions.includes('词典编辑') ? [JSON.stringify([{word:'physics', phonetic:'/ˈfɪzɪks/', pos:'n.', meaning:'物理学', example:'Study physics. 学习物理。'}])] : ['学习物理，', '探索世界。'];
+        const events = [...chunks.map(delta => ({type:'response.output_text.delta', delta})), {type:'response.completed'}];
         return new Response(new ReadableStream({async start(controller) {
           for (const event of events) {
             controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -96,7 +104,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     });
     await selectLine();
     const toolbarSize = await property('toolbar','({width:this.offsetWidth,height:this.offsetHeight})');
-    assert.ok(toolbarSize.width < 180 && toolbarSize.height <= 36);
+    assert.ok(toolbarSize.width <= 240 && toolbarSize.height <= 36);
     const before = await worker.evaluate(() => __requests.length);
     await page.screenshot({path:path.join(output,'toolbar.png')});
     await wait(150);
@@ -179,6 +187,43 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     await page.locator('#sample').evaluate(el => {el.textContent='Learn physics and explore the world.';});
     console.log('PASS: double-click word selection and collapsed extra actions');
 
+    await selectLine(); await clickShadow('ask');
+    await waitProperty('studyStatus','this.textContent','');
+    assert.match(await property('turns','this.textContent'), /第一段解释/);
+    await clickShadow('question'); await page.keyboard.insertText('这里指什么？'); await page.keyboard.press('Enter');
+    await waitProperty('turns','this.children.length',2);
+    await waitProperty('studyStatus','this.textContent','');
+    const followup = await worker.evaluate(() => __requests.at(-1).body.input);
+    assert.deepEqual(followup.map(x => x.role), ['user','user','assistant','user']);
+    assert.equal(followup.at(-1).content,'这里指什么？');
+    assert.match(followup[0].content,/Learn physics/);
+    async function clickStudyAction(label) {
+      const rect = await property('turns', `(()=>{const b=[...this.querySelectorAll('button')].findLast(b=>b.textContent===${JSON.stringify(label)});b.scrollIntoView({block:'nearest'});const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+      await page.mouse.click(rect.x,rect.y);
+    }
+    await clickStudyAction('收藏问答');
+    await waitProperty('turns',"this.textContent.includes('已收藏')",true);
+    await page.keyboard.press('Escape');
+    await selectLine(); await clickShadow('vocab');
+    await waitProperty('turns',"this.textContent.includes('物理学')",true);
+    await clickStudyAction('加入生词本');
+    await waitProperty('turns',"this.textContent.includes('已加入生词本')",true);
+    const opening = context.waitForEvent('page'); await clickShadow('openLibrary');
+    const book = await opening; await book.waitForLoadState();
+    await book.getByRole('heading',{name:'physics',exact:true}).waitFor();
+    await book.locator('#search').fill('unmatched');
+    await book.getByText('没有匹配的收藏。').waitFor();
+    await book.locator('#search').fill('物理学');
+    await book.getByRole('heading',{name:'physics',exact:true}).waitFor();
+    await book.reload(); await book.locator('#answers').click();
+    await book.getByRole('heading',{name:'这里指什么？'}).waitFor();
+    await book.getByRole('button',{name:'删除',exact:true}).click();
+    await book.getByText('共 0 条').waitFor();
+    await book.locator('#words').click();
+    await book.getByRole('heading',{name:'physics',exact:true}).waitFor();
+    await book.close(); await page.bringToFront(); await page.keyboard.press('Escape');
+    console.log('PASS: selection Q&A, follow-up with context, word lookup, persistent collections, search and deletion');
+
     await worker.evaluate(() => { __mode = 'slow'; });
     await selectLine(); await clickShadow('trigger');
     await waitProperty('status','this.textContent','翻译完成');
@@ -244,6 +289,18 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     await popup.locator('#translate').click();
     await popup.waitForFunction(() => document.querySelector('#status').textContent === '翻译完成');
     assert.equal(await popup.locator('#result').textContent(),'学习物理，探索世界。');
+    await popup.locator('#vocab').click();
+    const popupCdp = await context.newCDPSession(popup);
+    async function popupStudyContains(text) {
+      const {nodes} = await popupCdp.send('DOM.getFlattenedDocument', {depth:-1,pierce:true});
+      return nodes.some(node => node.nodeValue.includes(text));
+    }
+    await popupCdp.send('DOM.enable');
+    for (let i=0;i<60 && !(await popupStudyContains('物理学'));i++) await wait(50);
+    assert.ok(await popupStudyContains('物理学'));
+    await popup.locator('#ask').click();
+    for (let i=0;i<60 && !(await popupStudyContains('第一段解释。'));i++) await wait(50);
+    assert.ok(await popupStudyContains('第一段解释。'));
     const publicConfig = await popup.evaluate(() => chrome.runtime.sendMessage({type:'PUBLIC_SETTINGS'}));
     assert.ok(!Object.hasOwn(publicConfig,'apiKey'));
     await options.locator('#delete').click();

@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>划词译 · 阅读收藏</title><link rel="stylesheet" href="ui.css"></head>
+<body class="library"><main>
+<header><p class="eyebrow">划词译</p><h1>阅读收藏</h1></header>
+<nav aria-label="收藏分类"><a id="words" href="#words">生词本</a><a id="answers" href="#answers">问答收藏</a></nav>
+<label for="search">搜索收藏</label><input id="search" type="search" placeholder="搜索词语、释义或原文">
+<div class="book-summary"><span id="count"></span><button id="clear" class="subtle" hidden>清空生词本</button></div>
+<section id="entries" aria-label="收藏列表"></section>
+<div class="status" id="status" role="status"></div>
+</main><script src="client.js"></script><script type="module" src="library.js"></script></body></html>
