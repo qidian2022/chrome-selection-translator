@@ -16,11 +16,13 @@
     #toolbar button{height:26px;padding:0 9px} #toolbar button:hover{background:#ffffff1a} #toolbar .separator{width:1px;height:15px;background:#ffffff26}
     #panel{position:fixed;display:flex;flex-direction:column;width:260px;max-width:calc(100vw - 16px);background:#fff;color:#263238;border:1px solid #dce2e6;border-radius:10px;box-shadow:0 6px 24px #18253426;font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;text-align:left;overflow:hidden}
     header{display:flex;align-items:center;gap:2px;padding:5px 6px 0 11px;flex-shrink:0;color:#758089;user-select:none} header span{font-size:11px;margin-right:auto} header button{width:26px;height:26px}
-    #result{padding:5px 12px 11px;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;overflow:auto;overscroll-behavior:contain;min-height:0;flex:1} #result:empty{display:none}
+    #panelBody{min-height:0;overflow:auto;overscroll-behavior:contain}
+    #panel.reading #panelBody{display:contents}
+    #result{padding:5px 12px 11px;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text} #result:empty{display:none}
     #status{padding:5px 12px 10px;color:#7a858b;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;flex-shrink:0} #status.error{color:#a13c2c}
     #extras{padding:0 11px 8px;border-top:1px solid #edf0f2;flex-shrink:0} #extras .actions{display:flex;gap:4px;margin-top:5px;color:#576871} #extras button{font-size:11px;padding:5px 7px}
-    #panel.reading #copy,#panel.reading #more,#panel.reading #studyWords,#panel.reading #extras,#panel.reading #result,#panel.reading #status{display:none}
-    #panel.reading header{padding-bottom:4px}#studyWords{width:auto;font-size:11px}
+    #panel.reading #copy,#panel.reading #more,#panel.reading #extras,#panel.reading #result,#panel.reading #status{display:none}
+    #panel.reading header{padding-bottom:4px}
     #original{margin:6px 0 0;max-height:90px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#758089}
   </style>
   <div id="toolbar" role="toolbar" aria-label="划词工具" hidden>
@@ -30,10 +32,9 @@
     <span class="separator"></span><button id="copySource" title="复制原文" aria-label="复制原文">${copyIcon}<span id="copyLabel" hidden>复制</span></button>
   </div>
   <section id="panel" role="dialog" aria-label="中文译文" hidden>
-    <header><span id="panelTitle">中文</span><button id="studyWords" title="查看选文中的生词">查生词</button><button id="copy" title="复制译文" aria-label="复制译文" disabled>${copyIcon}</button><button id="more" title="更多选项" aria-label="更多选项" aria-expanded="false">${svg('<circle cx="4" cy="10" r=".7"/><circle cx="10" cy="10" r=".7"/><circle cx="16" cy="10" r=".7"/>')}</button><button id="close" title="关闭" aria-label="关闭译文">${svg('<path d="m5 5 10 10M15 5 5 15"/>')}</button></header>
-    <div id="result"></div><div id="status" role="status" aria-live="polite"></div>
+    <header><span id="panelTitle">中文</span><button id="copy" title="复制译文" aria-label="复制译文" disabled>${copyIcon}</button><button id="more" title="更多选项" aria-label="更多选项" aria-expanded="false">${svg('<circle cx="4" cy="10" r=".7"/><circle cx="10" cy="10" r=".7"/><circle cx="16" cy="10" r=".7"/>')}</button><button id="close" title="关闭" aria-label="关闭译文">${svg('<path d="m5 5 10 10M15 5 5 15"/>')}</button></header>
+    <div id="panelBody"><div id="result"></div><div id="status" role="status" aria-live="polite"></div><div id="study" hidden></div></div>
     <div id="extras" hidden><div class="actions"><button id="showOriginal" aria-expanded="false">原文</button><button id="retry">重新翻译</button><button id="settings">设置</button></div><div id="original" hidden></div></div>
-    <div id="study" hidden></div>
   </section>`;
   const $ = id => root.getElementById(id);
   const study = QuickTranslate.createStudy($('study'), () => placePanel());
@@ -161,12 +162,14 @@
       done() { if (id !== generation) return; $('copy').disabled = false; cancel = null; status('翻译完成',false,true); },
       error(error) { if (id !== generation) return; $('copy').disabled = !$('result').textContent; cancel = null; status(error,true); }
     }, {force});
+    $('panelBody').scrollTop = 0;
+    if (text.trim()) study.open('vocab', text, true);
   }
   // Keep the selection when clicking actions, but allow selecting the translated text.
   root.addEventListener('mousedown',event => { if (event.target.closest('button')) event.preventDefault(); });
   $('trigger').addEventListener('click',event => { if (event.isTrusted) start(saved); });
   $('ask').onclick = event => { if (event.isTrusted) startStudy('ask'); };
-  $('vocab').onclick = $('studyWords').onclick = event => { if (event.isTrusted) startStudy('vocab'); };
+  $('vocab').onclick = event => { if (event.isTrusted) startStudy('vocab'); };
   $('retry').addEventListener('click',event => { if (event.isTrusted) start(saved, true); });
   $('copySource').addEventListener('click',async event => {
     if (!event.isTrusted) return;

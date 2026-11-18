@@ -1,12 +1,14 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>划词译 · 设置</title><link rel="stylesheet" href="ui.css"></head>
-<body><main><header><div class="eyebrow">划词译 / OPENAI</div><h1>读到哪里，译到哪里。</h1><p>选中文字后，可以翻译、向 AI 追问，或把新词加入生词本。</p></header>
+<body><main><header><div class="eyebrow">划词译</div><h1>读到哪里，译到哪里。</h1><p>选中文字后，可以翻译、向 AI 追问，或把新词加入生词本。</p></header>
 <section class="card"><form id="form">
-<div class="field"><label for="key">OpenAI API 密钥</label><input id="key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false"><p class="hint" id="keyHint">填入你自己的 API 密钥。</p></div>
-<div class="field"><label for="model">模型</label><input id="model" type="text" value="gpt-6-luna" spellcheck="false" required><p class="hint">默认 gpt-6-luna，关闭推理、直接翻译；也可以填写你账户可用的文本模型名称。</p></div>
+<div class="field"><label for="provider">API 服务商</label><select id="provider"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="custom">自定义（兼容 Chat Completions）</option></select></div>
+<div class="field" id="addressField" hidden><label for="address">API 地址</label><input id="address" type="url" spellcheck="false" placeholder="https://example.com/v1"><p class="hint">填写服务商的基础地址或完整的 /chat/completions 地址。本机 Ollama 可填 http://localhost:11434/v1。</p></div>
+<div class="field"><label for="key">API 密钥</label><input id="key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false"><p class="hint" id="keyHint">填入你自己的 API 密钥。</p></div>
+<div class="field"><label for="model">模型</label><input id="model" type="text" value="gpt-6-luna" spellcheck="false" required><p class="hint">填写当前服务可用的模型 ID。</p></div>
 <div class="field"><label class="check"><input id="bubble" type="checkbox" checked>选中文字后自动显示划词浮条</label><p class="hint">也可使用右键菜单，或快捷键 Option/Alt + Shift + T。</p></div>
 <div class="row"><button class="primary" type="submit">保存设置</button><button type="button" id="test">保存并测试</button><button type="button" class="subtle" id="delete">删除密钥</button></div>
 <div id="status" class="status" role="status" aria-live="polite"></div>
 </form></section>
-<p class="privacy">密钥保存在本机 Chrome 扩展存储中，不随 Chrome 账户同步；本机存储未加密。翻译和查生词时，选文会发送至 OpenAI。追问还会发送本次问题和最近六轮问答。收藏保存在本机。已完成的译文在内存中短时缓存，便于重复查看。测试按钮会发送一句示例英文，按你的 API 账户计费。</p>
-<p class="hint"><a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">管理 OpenAI API 密钥 ↗</a> · 浮条开关保存后立即生效。</p>
-</main><script src="client.js"></script><script src="options.js"></script></body></html>
+<p class="privacy">密钥保存在本机 Chrome 扩展存储中，不随 Chrome 账户同步；本机存储未加密。点击翻译会向当前服务商分别请求译文和生词。追问还会发送本次问题和最近六轮问答。收藏保存在本机。已完成的译文和词条在内存中短时缓存，便于重复查看。测试按钮会发送一句示例英文，按你的 API 账户计费。</p>
+<p class="hint"><a id="keyLink" href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">管理 OpenAI API 密钥 ↗</a> · 浮条开关保存后立即生效。</p>
+</main><script src="client.js"></script><script type="module" src="options.js"></script></body></html>

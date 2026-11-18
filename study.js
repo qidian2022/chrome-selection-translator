@@ -10,6 +10,9 @@
     root.innerHTML = `<style>
       :host{min-height:0;display:flex;flex-direction:column;text-align:left;color:#263832;font:13px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color-scheme:light}
       *{box-sizing:border-box}[hidden]{display:none!important}
+      #wordsTitle{margin:0;padding:5px 12px 0;font-size:11px;font-weight:600;color:#597163;border-top:1px solid #e0e8e3}
+      :host([data-inline]) article{padding:5px 0}:host([data-inline]) article:first-child{border-top:0}
+      :host([data-inline]) #readout{overflow:visible}
       #readout{min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px}
       #excerpt{margin:3px 0 8px;border-left:2px solid #9abaae;padding-left:8px;color:#687c70;font-size:12px;overflow-wrap:anywhere;max-height:3.1em;overflow:auto}
       article{padding:8px 0;border-top:1px solid #e0e8e3;overflow-wrap:anywhere}
@@ -22,7 +25,7 @@
       textarea{flex:1;min-width:0;height:36px;resize:none;border:1px solid #cad8ce;border-radius:6px;padding:6px;background:white;color:#20382f}
       #send{color:white;background:#20664b}
     </style>
-    <div id="readout"><p id="excerpt"></p><div id="turns"></div></div>
+    <h2 id="wordsTitle" hidden>生词</h2><div id="readout"><p id="excerpt"></p><div id="turns"></div></div>
     <footer><span id="studyStatus" role="status"></span><button id="retryStudy" hidden>重试</button><button id="openLibrary" type="button"></button></footer>
     <form><textarea id="question" maxlength="2000" aria-label="追问" placeholder="继续追问…"></textarea><button id="send">发送</button></form>`;
     const $ = id => root.getElementById(id);
@@ -100,6 +103,7 @@
               actions(card, 'word', {...item, source}, item.word);
               $('turns').append(card);
             }
+            if (container.hasAttribute('data-inline') && !words.length) container.hidden = true;
             status(words.length ? '' : '这段选文中没有可收录的生词。');
           }
         },
@@ -113,6 +117,7 @@
           status(message, true);
         }
       }, {mode, question, history: history.slice(-6)});
+      resize();
     }
     $('retryStudy').onclick = () => retry?.();
     $('openLibrary').onclick = () => chrome.runtime.sendMessage({type:'OPEN_LIBRARY', kind: mode === 'ask' ? 'answer' : 'word'})
@@ -133,8 +138,13 @@
     };
     return {
       close,
-      open(nextMode, text) {
+      get pending() { return Boolean(cancel); },
+      open(nextMode, text, inline = false) {
         close();
+        container.hidden = false;
+        container.toggleAttribute('data-inline', inline);
+        $('wordsTitle').hidden = !inline;
+        $('excerpt').hidden = inline;
         mode = nextMode;
         source = text.trim();
         $('excerpt').textContent = source;

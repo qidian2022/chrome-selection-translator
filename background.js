@@ -1,9 +1,11 @@
+import {providers, endpointFor, hostPattern, localService} from './providers.js';
 import {studyPrompt, parseWords} from './study-api.js';
 import {saveEntry} from './library-store.js';
 import {translate, requestText, DEFAULT_MODEL, validateText} from './api.js';
 import {TranslationCache} from './cache.js';
 
 const translationCache = new TranslationCache();
+const wordCache = new TranslationCache();
 let cacheVersion = 0;
 
 const ready = (async () => {
@@ -20,13 +22,34 @@ const ready = (async () => {
     await chrome.storage.local.set({showBubble: true, compactToolbarApplied: true});
   }
 })();
-const settings = async () => { await ready; return chrome.storage.local.get({apiKey: '', model: DEFAULT_MODEL, showBubble: true}); };
+async function preferences() {
+  await ready;
+  return chrome.storage.local.get({provider: 'openai', customUrl: '', showBubble: true});
+}
+
+async function profile(provider, customUrl) {
+  const endpoint = endpointFor(provider, customUrl);
+  if (provider === 'openai') {
+    const saved = await chrome.storage.local.get({apiKey: '', model: DEFAULT_MODEL});
+    return {...saved, endpoint};
+  }
+  const key = 'profile:' + endpoint;
+  const saved = (await chrome.storage.local.get(key))[key];
+  return {endpoint, model: saved?.model || providers[provider].model, apiKey: saved?.apiKey || ''};
+}
+
+async function checkAccess(provider, endpoint) {
+  if (provider !== 'openai' && !await chrome.permissions.contains({origins: [hostPattern(endpoint)]}))
+    throw new Error('请到设置页保存此接口，并允许访问服务商域名。');
+}
 const trustedPage = sender => sender.id === chrome.runtime.id && [chrome.runtime.getURL('options.html'), chrome.runtime.getURL('popup.html')].includes(sender.url?.split('?')[0]);
 
 // Only the public display preference is sent to page content scripts.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  if (changes.apiKey || changes.model) { translationCache.clear(); cacheVersion++; }
+  if (changes.apiKey || changes.model || changes.provider || changes.customUrl || Object.keys(changes).some(key => key.startsWith('profile:'))) {
+    translationCache.clear(); wordCache.clear(); cacheVersion++;
+  }
   if (!changes.showBubble) return;
   chrome.tabs.query({}).then(tabs => Promise.allSettled(tabs.filter(tab => tab.id).map(tab =>
     chrome.tabs.sendMessage(tab.id, {type: 'BUBBLE_VISIBILITY', enabled: changes.showBubble.newValue !== false})
@@ -53,21 +76,32 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       return {ok: true};
     }
     if (message.type === 'OPEN_SETTINGS') { await chrome.runtime.openOptionsPage(); return {ok: true}; }
-    if (message.type === 'PUBLIC_SETTINGS' || (message.type === 'GET_SETTINGS' && trustedPage(sender))) {
-      const {apiKey, model, showBubble} = await settings();
-      return {ok: true, hasKey: Boolean(apiKey), model, showBubble};
-    }
-    if (message.type === 'SAVE_SETTINGS' && trustedPage(sender)) {
-      const old = await settings();
+    if (message.type === 'PUBLIC_SETTINGS') return {ok: true, showBubble: (await preferences()).showBubble};
+    if (trustedPage(sender) && ['GET_SETTINGS', 'GET_PROFILE', 'SAVE_SETTINGS', 'DELETE_KEY'].includes(message.type)) {
+      const current = await preferences();
+      const provider = message.type === 'GET_SETTINGS' ? current.provider : (message.provider || 'openai');
+      const customUrl = message.customUrl ?? current.customUrl;
+      const saved = await profile(provider, customUrl);
+      if (message.type === 'GET_SETTINGS' || message.type === 'GET_PROFILE') {
+        return {ok: true, provider, customUrl, hasKey: Boolean(saved.apiKey), model: saved.model, showBubble: current.showBubble};
+      }
+      const profileKey = 'profile:' + saved.endpoint;
+      if (message.type === 'DELETE_KEY') {
+        if (provider === 'openai') await chrome.storage.local.remove('apiKey');
+        else await chrome.storage.local.set({[profileKey]: {model: saved.model, apiKey: ''}});
+        return {ok: true};
+      }
       const model = String(message.model || '').trim();
-      if (!/^[a-zA-Z0-9._:-]{1,120}$/.test(model)) throw new Error('请填写有效的模型名称。');
-      const apiKey = String(message.apiKey || '').trim() || old.apiKey;
-      if (/[\r\n\s]/.test(apiKey)) throw new Error('API 密钥中不能包含空格或换行。');
-      await chrome.storage.local.set({apiKey, model, showBubble: message.showBubble !== false});
+      if (!/^[a-zA-Z0-9._:@/+-]{1,160}$/.test(model)) throw new Error('请填写有效的模型 ID。');
+      const apiKey = String(message.apiKey || '').trim() || saved.apiKey;
+      if (/\s/.test(apiKey)) throw new Error('API 密钥中不能包含空格或换行。');
+      await checkAccess(provider, saved.endpoint);
+      const patch = {provider, showBubble: message.showBubble !== false};
+      if (provider === 'custom') patch.customUrl = customUrl.trim();
+      if (provider === 'openai') Object.assign(patch, {apiKey, model});
+      else patch[profileKey] = {apiKey, model};
+      await chrome.storage.local.set(patch);
       return {ok: true, hasKey: Boolean(apiKey)};
-    }
-    if (message.type === 'DELETE_KEY' && trustedPage(sender)) {
-      await ready; await chrome.storage.local.remove('apiKey'); return {ok: true};
     }
     if (message.type === 'TAKE_JOB' && trustedPage(sender) && /^[\w-]{36}$/.test(message.id || '')) {
       const key = `job:${message.id}`;
@@ -90,26 +124,37 @@ chrome.runtime.onConnect.addListener(port => {
     if (message.type !== 'START' || started) return;
     started = true;
     try {
-      const config = await settings();
+      const {provider, customUrl} = await preferences();
+      const config = await profile(provider, customUrl);
+      await checkAccess(provider, config.endpoint);
       if (controller.signal.aborted) return;
       const text = validateText(message.text);
       const options = {...config, signal: controller.signal, onDelta: delta => send({type: 'DELTA', delta})};
+      if (!config.apiKey && !localService(config.endpoint)) throw new Error('先在设置页填写当前服务商的 API 密钥，再开始使用。');
+      const cacheModel = JSON.stringify([config.endpoint, config.model]);
+      const version = cacheVersion;
       if (port.name !== 'translate') {
+        if (port.name === 'vocab') {
+          const words = wordCache.get(cacheModel, text);
+          if (words !== null) { send({type: 'DONE', words}); return; }
+        }
         const prompt = studyPrompt(port.name, text, message.question, message.history);
         if (port.name === 'vocab') delete options.onDelta;
         const output = await requestText({...options, ...prompt});
-        send(port.name === 'vocab' ? {type: 'DONE', words: parseWords(output)} : {type: 'DONE'});
+        if (port.name === 'vocab') {
+          const words = parseWords(output);
+          if (!controller.signal.aborted && version === cacheVersion) wordCache.set(cacheModel, text, words);
+          send({type: 'DONE', words});
+        } else send({type: 'DONE'});
         return;
       }
-      if (!config.apiKey) throw new Error('先在设置页填写 OpenAI API 密钥，再开始翻译。');
-      const version = cacheVersion;
-      if (message.force === true) translationCache.delete(config.model, text);
-      const cached = translationCache.get(config.model, text);
+      if (message.force === true) translationCache.delete(cacheModel, text);
+      const cached = translationCache.get(cacheModel, text);
       if (cached !== null) {
         send({type: 'DELTA', delta: cached}); send({type: 'DONE'}); return;
       }
       const output = await translate({...options, text});
-      if (!controller.signal.aborted && version === cacheVersion) translationCache.set(config.model, text, output);
+      if (!controller.signal.aborted && version === cacheVersion) translationCache.set(cacheModel, text, output);
       send({type: 'DONE'});
     } catch (error) { send({type: 'ERROR', error: error.message}); }
   });

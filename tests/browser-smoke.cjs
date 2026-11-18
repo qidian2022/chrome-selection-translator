@@ -1,11 +1,21 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const extension = path.resolve(__dirname, '..');
+const project = path.resolve(__dirname, '..');
 const output = process.env.TEST_OUTPUT || '/tmp/selection-translator-test';
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 (async () => {
+  // A headless browser has no interactive host-permission prompt. Pre-grant only the two fixture hosts.
+  const extension = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-translator-fixture-'));
+  for (const filename of fs.readdirSync(project).filter(f => /\.(?:html|css|js)$/.test(f) || f === 'icons')) {
+    fs.cpSync(path.join(project,filename),path.join(extension,filename),{recursive:true});
+  }
+  const manifest = JSON.parse(fs.readFileSync(path.join(project,'manifest.json'),'utf8'));
+  manifest.host_permissions.push('https://api.deepseek.com/*','http://127.0.0.1/*');
+  fs.writeFileSync(path.join(extension,'manifest.json'),JSON.stringify(manifest));
   const channel = process.env.PLAYWRIGHT_CHANNEL || 'chromium';
   const context = await chromium.launchPersistentContext('', {
     channel, headless: true, ignoreDefaultArgs: ['--disable-extensions'],
@@ -25,15 +35,20 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
       globalThis.__requests = [];
       globalThis.__mode = 'success';
       globalThis.fetch = async (url, init) => {
-        __requests.push({url, body: JSON.parse(init.body)});
+        const payload = JSON.parse(init.body);
+        const vocab = (payload.instructions || payload.messages?.[0]?.content).includes('词典编辑');
+        __requests.push({url, body:payload, auth:init.headers.Authorization});
+        if (vocab && __mode === 'vocab-error') return new Response('{}', {status:503});
         if (__mode === 'unauthorized') return new Response(JSON.stringify({error:{code:'invalid_api_key'}}), {status:401});
         if (__mode === 'slow') {
           return new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
         }
-        const payload = JSON.parse(init.body);
-        const chunks = Array.isArray(payload.input) ? ['第一段', '解释。'] :
-          payload.instructions.includes('词典编辑') ? [JSON.stringify([{word:'physics', phonetic:'/ˈfɪzɪks/', pos:'n.', meaning:'物理学', example:'Study physics. 学习物理。'}])] : ['学习物理，', '探索世界。'];
-        const events = [...chunks.map(delta => ({type:'response.output_text.delta', delta})), {type:'response.completed'}];
+        const chunks = (Array.isArray(payload.input) || payload.messages?.length > 2) ? ['第一段', '解释。'] :
+          vocab ? [JSON.stringify([{word:'physics', phonetic:'/ˈfɪzɪks/', pos:'n.', meaning:'物理学', example:'Study physics. 学习物理。'}])] : ['学习物理，', '探索世界。'];
+        const events = payload.messages ? [
+          ...chunks.map(content => ({choices:[{delta:{content},finish_reason:null}]})),
+          {choices:[{delta:{},finish_reason:'stop'}]}
+        ] : [...chunks.map(delta => ({type:'response.output_text.delta', delta})), {type:'response.completed'}];
         return new Response(new ReadableStream({async start(controller) {
           for (const event of events) {
             controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -114,9 +129,15 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     assert.equal(await property('result','this.textContent'), '学习物理，探索世界。');
     assert.equal(await property('original','this.textContent'), 'Learn physics and explore the world.');
     const panelSize = await property('panel','({width:this.offsetWidth,height:this.offsetHeight})');
-    assert.equal(panelSize.width,240); assert.ok(panelSize.height < 110);
+    await waitProperty('turns',"this.textContent.includes('物理学')",true);
+    assert.equal(await property('study','this.hasAttribute("data-inline")'), true);
+    const translationBottom = await property('result','this.getBoundingClientRect().bottom');
+    assert.ok(await property('wordsTitle','this.getBoundingClientRect().top') >= translationBottom);
+    assert.ok(await property('turns',"this.textContent.includes('加入生词本')"));
+    assert.equal(await worker.evaluate(() => __requests.length),before+2);
+    assert.equal(panelSize.width,240); assert.ok(panelSize.height <= 360);
     await page.screenshot({path:path.join(output,'translation.png')});
-    const last = await worker.evaluate(() => __requests.at(-1));
+    const last = await worker.evaluate(() => __requests.findLast(r => !r.body.instructions.includes('词典编辑')));
     assert.equal(last.url, 'https://api.openai.com/v1/responses');
     assert.equal(last.body.input, 'Learn physics and explore the world.');
     assert.equal(last.body.store, false);
@@ -167,8 +188,8 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     await property('result',"(this.textContent='Long translation. '.repeat(800))");
     await page.evaluate(()=>window.dispatchEvent(new Event('resize')));
     const panelTopBeforeInternal=await property('panel','this.getBoundingClientRect().top');
-    await property('result','(this.scrollTop=100)');
-    assert.ok(await property('result','this.scrollTop > 0'));
+    await property('panelBody','(this.scrollTop=100)');
+    assert.ok(await property('panelBody','this.scrollTop > 0'));
     assert.equal(await property('panel','this.hidden'),false);
     assert.equal(await property('panel','this.getBoundingClientRect().top'),panelTopBeforeInternal);
     await page.keyboard.press('Escape');
@@ -289,7 +310,6 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     await popup.locator('#translate').click();
     await popup.waitForFunction(() => document.querySelector('#status').textContent === '翻译完成');
     assert.equal(await popup.locator('#result').textContent(),'学习物理，探索世界。');
-    await popup.locator('#vocab').click();
     const popupCdp = await context.newCDPSession(popup);
     async function popupStudyContains(text) {
       const {nodes} = await popupCdp.send('DOM.getFlattenedDocument', {depth:-1,pierce:true});
@@ -298,11 +318,49 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     await popupCdp.send('DOM.enable');
     for (let i=0;i<60 && !(await popupStudyContains('物理学'));i++) await wait(50);
     assert.ok(await popupStudyContains('物理学'));
+    assert.equal(await popup.locator('#study').getAttribute('data-inline'), '');
+    await worker.evaluate(() => { __mode = 'vocab-error'; });
+    await popup.locator('#source').fill('A different example.');
+    await popup.locator('#translate').click();
+    await popup.waitForFunction(() => document.querySelector('#status').textContent === '翻译完成');
+    for (let i=0;i<60 && !(await popupStudyContains('暂时不可用'));i++) await wait(50);
+    assert.ok(await popupStudyContains('暂时不可用'));
+    assert.equal(await popup.locator('#result').textContent(),'学习物理，探索世界。');
+    await worker.evaluate(() => { __mode = 'success'; });
     await popup.locator('#ask').click();
     for (let i=0;i<60 && !(await popupStudyContains('第一段解释。'));i++) await wait(50);
     assert.ok(await popupStudyContains('第一段解释。'));
     const publicConfig = await popup.evaluate(() => chrome.runtime.sendMessage({type:'PUBLIC_SETTINGS'}));
     assert.ok(!Object.hasOwn(publicConfig,'apiKey'));
+    await options.locator('#provider').selectOption('deepseek');
+    await options.waitForFunction(() => document.querySelector('#model').value === 'deepseek-flash');
+    await options.locator('#key').fill('test-deepseek-only');
+    await options.locator('#test').click();
+    await options.waitForFunction(() => document.querySelector('#status').textContent.includes('连接成功'));
+    const deepseekCall = await worker.evaluate(() => __requests.at(-1));
+    assert.equal(deepseekCall.url,'https://api.deepseek.com/chat/completions');
+    assert.equal(deepseekCall.auth,'Bearer test-deepseek-only');
+    await popup.locator('#translate').click();
+    await popup.waitForFunction(() => document.querySelector('#status').textContent === '翻译完成');
+    for (let i=0;i<60 && !(await popupStudyContains('物理学'));i++) await wait(50);
+    assert.ok(await popupStudyContains('物理学'));
+    await popup.locator('#ask').click();
+    for (let i=0;i<60 && !(await popupStudyContains('第一段解释。'));i++) await wait(50);
+    assert.ok(await popupStudyContains('第一段解释。'));
+    await options.locator('#provider').selectOption('custom');
+    await options.locator('#address').fill('http://127.0.0.1:11434/v1');
+    await options.locator('#model').fill('local/demo:latest');
+    await options.locator('#test').click();
+    await options.waitForFunction(() => document.querySelector('#status').textContent.includes('连接成功'));
+    const localCall = await worker.evaluate(() => __requests.at(-1));
+    assert.equal(localCall.url,'http://127.0.0.1:11434/v1/chat/completions');
+    assert.equal(localCall.auth,undefined);
+    await options.locator('#provider').selectOption('openai');
+    await options.waitForFunction(() => document.querySelector('#keyHint').textContent.includes('已保存'));
+    await options.locator('#test').click();
+    await options.waitForFunction(() => document.querySelector('#status').textContent.includes('连接成功'));
+    assert.equal(await worker.evaluate(() => __requests.at(-1).auth),'Bearer test-not-a-real-key');
+    console.log('PASS: DeepSeek, keyless local API and original OpenAI profile, inline vocabulary and independent errors');
     await options.locator('#delete').click();
     await options.waitForFunction(() => document.querySelector('#status').textContent === '密钥已删除。');
     await popup.locator('#translate').click();
@@ -310,5 +368,5 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     assert.deepEqual(errors, []);
     console.log('PASS: manual translation, no secret in public config, key deletion, missing-key error');
     console.log('PASS: all browser smoke checks; no page errors');
-  } finally { await context.close(); }
+  } finally { await context.close(); fs.rmSync(extension,{recursive:true,force:true}); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

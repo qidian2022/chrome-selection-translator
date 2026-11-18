@@ -80,3 +80,55 @@ test('malformed SSE is rejected', async () => {
   const body = new ReadableStream({start(c) { c.enqueue(new TextEncoder().encode('data: {bad}\n\n')); c.close(); }});
   await assert.rejects(async () => { for await (const event of readEvents(body)) void event; }, /格式异常/);
 });
+
+test('compatible APIs receive chat messages, stream content, and detect truncated completions', async () => {
+  const endpoint = 'https://api.deepseek.com/chat/completions';
+  let body;
+  const event = (content, finish_reason = null) => ({choices:[{delta:{content},finish_reason}]});
+  const run = events => translate({text:'Hello', endpoint, model:'deepseek-flash', apiKey:'test', fetchImpl:async (url, init) => {
+    assert.equal(url,endpoint);
+    body = JSON.parse(init.body);
+    return new Response(stream(events));
+  }});
+  assert.equal(await run([event('你好'),event('', 'stop')]), '你好');
+  assert.equal(body.messages[0].role,'system');
+  assert.deepEqual(body.messages[1],{role:'user',content:'Hello'});
+  assert.equal(body.model,'deepseek-flash');
+  assert.equal(body.instructions,undefined);
+  await assert.rejects(run([event('半句')]), /尚未完成/);
+  await assert.rejects(run([event('半句','length')]), /尚未完成/);
+});
+
+test('custom endpoints retain base paths, allow local HTTP and accept full completion addresses', async () => {
+  const {endpointFor,hostPattern} = await import('../providers.js');
+  assert.equal(endpointFor('custom','https://api.example.net/compatible/v1/'),'https://api.example.net/compatible/v1/chat/completions');
+  const local = 'http://127.0.0.1:11434/v1/chat/completions';
+  assert.equal(endpointFor('custom',local),local);
+  assert.equal(hostPattern(local),'http://127.0.0.1/*');
+  for (const url of ['http://api.example.net/v1','https://user:pass@example.net','https://example.net?key=test'])
+    assert.throws(() => endpointFor('custom',url));
+});
+
+test('local compatible HTTP service receives a keyless follow-up and returns only the streamed answer', async t => {
+  const {createServer} = await import('node:http');
+  const {requestText} = await import('../api.js');
+  const {studyPrompt} = await import('../study-api.js');
+  let received;
+  const server = createServer(async (req, res) => {
+    let data = '';
+    for await (const chunk of req) data += chunk;
+    received = {url:req.url, auth:req.headers.authorization, messages:JSON.parse(data).messages};
+    res.writeHead(200, {'Content-Type':'text/event-stream'});
+    for (const choice of [{delta:{reasoning_content:'思考中'}}, {delta:{content:'通量'},finish_reason:'stop'}])
+      res.write('data: ' + JSON.stringify({choices:[choice]}) + '\n\n');
+    res.end('data: [DONE]\n\n');
+  });
+  await new Promise((resolve,reject) => { server.once('error',reject); server.listen(0,'127.0.0.1',resolve); });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const endpoint = 'http://127.0.0.1:' + server.address().port + '/v1/chat/completions';
+  const prompt = studyPrompt('ask','flux','再举一例',[{question:'是什么？',answer:'穿过曲面的量。'}]);
+  assert.equal(await requestText({...prompt,endpoint,model:'local/model',apiKey:''}), '通量');
+  assert.equal(received.auth,undefined);
+  assert.equal(received.url,'/v1/chat/completions');
+  assert.deepEqual(received.messages.map(m=>m.role),['system','user','user','assistant','user']);
+});
